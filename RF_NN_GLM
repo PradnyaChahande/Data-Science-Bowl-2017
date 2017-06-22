@@ -1,0 +1,205 @@
+library(oro.dicom) 
+library(BiocGenerics) 
+library(EBImage)
+library(readr)
+
+#-----------------------Set directories and read lables start--------------------#
+#strDir = "C:/Users/Pradnya/Documents/TTU_Spring_2017/Predictive_Analysis/midterm/input/Max/"
+#strDir = "C:/Users/Pradnya/Documents/TTU_Spring_2017/Predictive_Analysis/midterm/input/zip/stage1/"
+strDir="C:/Users/Pradnya/Documents/TTU_Spring_2017/Predictive_Analysis/midterm/input/stage2/stage2/"
+setwd(strDir)
+
+#strImages = paste(strDir,"sample_images/",sep="")
+#strImages = paste(strDir,"stage1/",sep="")
+strImages = paste(strDir,"stage2/",sep="")
+
+#stage1_labels <- read_csv(paste(strDir,"stage1_labels.csv",sep=""))
+stage1_labels <- read_csv(paste(strDir,"stage2_labels.csv",sep=""))
+
+stg_lbl <-data.frame(stage1_labels)
+sz=32  #Set the image size for reduction / expansion
+
+l <- list()
+
+
+#----------------------Set directories and read lables end--------------------#
+
+
+#------------------Function to process images start----------------------------#
+funcPreprocessing <- function(setwd){
+  fileList=dir(setwd, recursive=TRUE)
+  m=length(fileList) 
+  z=array(dim=c(length(fileList),sz,sz)) 
+  face=array(dim=c(length(fileList),sz*sz))
+  i=1
+  
+  for (i in 1:m)
+  { 
+    #l is length 
+    a=paste(setwd, fileList[i],sep="")
+    if (file.exists("Icon/r")) {file.remove("Icon/r")
+    }
+    mydata=readDICOMFile(a) 
+    y=resize(t(mydata$img), w=sz,h=sz) 
+    #image(mydata$img,col=gray(0:255/256), axes=FALSE, xlab="", ylab="") 
+    z[i,,]=imageData(y) 
+    face[i,]=imageData(y) 
+    rm(mydata) 
+    rm(y) 
+  }
+
+  face=data.frame(face) #header 
+  print("here1")
+  #mysubface=face[,!(apply(face,2,mean)==-2000)] 
+  #mysubface=mysubface[!apply(mysubface,1,mad)<350,]
+  mypca=prcomp(face, scale=FALSE, retx=TRUE) 
+  summary(mypca) 
+  eigenlung=mypca$rotation[,1:3]
+  print(c(eigenlung))
+  dim(c(eigenlung))
+  rm(face)
+  #rm(mysubface)
+  return(c(eigenlung))
+  
+}
+
+#------------------Function to process images end---  -------------------------#
+
+
+#------------------Call function for each patient start-------------------------#
+
+for (j in 1:length(stg_lbl[,1]))  ##Change 3 to length of folderlist
+{
+  if (stage1_labels[j,1] != "92774bd1b239328d8ce809223e3334b4")
+  {
+    setwd = paste(strImages,stage1_labels[j,1],"/",sep="")
+    print(setwd)
+    cnt=0
+    l[[j]] = funcPreprocessing(setwd)
+  }
+}
+
+#------------------Call function for each patient end-------------------------#
+
+
+#----Make data frame from image data and combine it with patient ids start----#
+
+#var2 =data.frame(matrix(unlist(l), nrow=287, byrow=T)) #1st part of stage 2
+#write.csv(df_final,file="processed_images2_part1.csv")
+
+var2 =data.frame(matrix(unlist(l), nrow=length(stg_lbl[,1]), byrow=T))
+
+par(mai=c(.05,.05,.05,.05))
+par(mfrow=c(2,2))
+
+for (i in 1:nrow(var2[i,]))
+{ im=matrix(data=rev(var2[,1]),nrow=sz,ncol=sz) 
+  image(1:sz,1:sz,im,col=gray((0:255)/255)) }
+
+
+df_test2 = cbind(stg_lbl[288:506,],var2)
+
+write.csv(df_final,file="processed_images_part2.csv")
+
+
+#----Make data frame from image data and combine it with patient ids start----#
+
+
+df_test1 = read_csv("C:/Users/Pradnya/Documents/TTU_Spring_2017/Predictive_Analysis/midterm/input/stage2/stage2/processed_images2_part1.csv")
+df_test1=df_test1[,-1]
+
+
+names(df_test1)[names(df_test1) == 'X1_1'] <- 'X1'
+names(df_train)[names(df_train) == 'X1_1'] <- 'X1'
+
+df_test_287 = cbind(stg_lbl[287,],df_test2[2,-1:-2] )
+
+
+df_test = rbind(df_test1,df_test_287,df_test2)
+
+#The above for loop was already run for stage1 images and the output is stored in the below csv.
+df_stage1 =read_csv("C:/Users/Pradnya/Documents/TTU_Spring_2017/Predictive_Analysis/midterm/input/zip/stage1/processed_images_stage1.csv")
+
+df_train = df_stage1[1:1397,-1]
+
+#write train and test as csv for backup#
+
+write.csv(df_train, file = 'df_train.csv', row.names = F)
+write.csv(df_test, file = 'df_test.csv', row.names = F)
+
+#---------------------------- Run GLM model start----------------------------------#
+
+train <- df_train[,-1]
+df_predictor <- df_test[,1]
+test <- df_test[,-1]
+
+model <- glm(cancer ~.,family=binomial(link='logit'),data=train)
+
+summary(model)
+
+fitted.results <- predict(model,newdata=test)
+
+# Save the solution to a dataframe with two columns: Id and cancer (prediction)
+solution_stage_2 <- data.frame(PatientID = df_predictor, cancer = fitted.results)
+
+# Write the solution to file
+write.csv(solution_stage_2, file = 'glm2.csv', row.names = F)
+
+##Model did not converge, bad performance
+
+#---------------------------- Run GLM model end----------------------------------#
+
+
+
+#----------------------------Run H2o model start---------------------------------#
+
+require(h2o)
+
+y <-"cancer"
+x <- setdiff(names(train), y)
+
+h2o.init()
+
+train.hex = as.h2o(train)
+
+test.hex =  as.h2o(test[,-1])
+
+
+model_hex <- h2o.deeplearning(x = x,
+                              y = y,
+                              training_frame = train.hex,
+                              activation = "TanhWithDropout", # or 'Tanh'
+                              input_dropout_ratio = 0.2, # % of inputs dropout
+                              hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                              #balance_classes = TRUE, 
+                              hidden = c(50,50,50), # three layers of 50 nodes
+                              epochs = 100)
+
+pred <- h2o.predict(model_hex, newdata = test.hex)
+
+output <-as.data.frame(pred)
+output <- cbind(df_test$id,output)
+
+names(output)[names(output) == 'df_test$id'] <- 'id'
+names(output)[names(output) == 'predict'] <- 'cancer'
+
+write.csv(as.data.frame(output),file = "h2o.csv")
+
+#Kaggle rank 32, Kaggle score 0.48856
+
+#----------------------------Run H2o model end---------------------------------#
+
+library('randomForest')
+
+set.seed(1234)
+
+rf_model <- randomForest(factor(cancer) ~.,data = train)
+
+# Predict using the test set
+prediction <- predict(rf_model, test, "prob")
+
+# Save the solution to a dataframe with two columns: id and cancer (prediction)
+solution <- data.frame(id = df_test$id, cancer = prediction[,2])
+
+# Write the solution to file
+write.csv(solution, file = 'rf_predicted_Solution.csv', row.names = F)
